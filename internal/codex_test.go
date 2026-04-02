@@ -1,4 +1,4 @@
-package clawconnect
+package internal
 
 import (
 	"encoding/json"
@@ -6,19 +6,21 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+
+	clawconnect "github.com/alswl/claw-connect"
 )
 
-func newTestCodexClient(t *testing.T) (*codexClient, *fakeStdin, []Message) {
+func newTestCodexClient(t *testing.T) (*codexClient, *fakeStdin, []clawconnect.Message) {
 	t.Helper()
 	fs := &fakeStdin{}
 	var mu sync.Mutex
-	var messages []Message
+	var messages []clawconnect.Message
 
 	c := &codexClient{
-		cfg:     Config{Logger: slog.Default()},
+		cfg:     clawconnect.Config{Logger: slog.Default()},
 		stdin:   fs,
 		pending: make(map[int]*pendingRPC),
-		onMessage: func(msg Message) {
+		onMessage: func(msg clawconnect.Message) {
 			mu.Lock()
 			messages = append(messages, msg)
 			mu.Unlock()
@@ -168,8 +170,8 @@ func TestCodexLegacyEventTaskStarted(t *testing.T) {
 
 	c, _, _ := newTestCodexClient(t)
 	var gotStatus bool
-	c.onMessage = func(msg Message) {
-		if msg.Type == MessageStatus && msg.Status == "running" {
+	c.onMessage = func(msg clawconnect.Message) {
+		if msg.Type == clawconnect.MessageStatus && msg.Status == "running" {
 			gotStatus = true
 		}
 	}
@@ -192,8 +194,8 @@ func TestCodexLegacyEventAgentMessage(t *testing.T) {
 
 	c, _, _ := newTestCodexClient(t)
 	var gotText string
-	c.onMessage = func(msg Message) {
-		if msg.Type == MessageText {
+	c.onMessage = func(msg clawconnect.Message) {
+		if msg.Type == clawconnect.MessageText {
 			gotText = msg.Content
 		}
 	}
@@ -209,8 +211,8 @@ func TestCodexLegacyEventExecCommand(t *testing.T) {
 	t.Parallel()
 
 	c, _, _ := newTestCodexClient(t)
-	var messages []Message
-	c.onMessage = func(msg Message) {
+	var messages []clawconnect.Message
+	c.onMessage = func(msg clawconnect.Message) {
 		messages = append(messages, msg)
 	}
 
@@ -220,10 +222,10 @@ func TestCodexLegacyEventExecCommand(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messages))
 	}
-	if messages[0].Type != MessageToolUse || messages[0].Tool != "exec_command" || messages[0].CallID != "c1" {
+	if messages[0].Type != clawconnect.MessageToolUse || messages[0].Tool != "exec_command" || messages[0].CallID != "c1" {
 		t.Fatalf("unexpected begin message: %+v", messages[0])
 	}
-	if messages[1].Type != MessageToolResult || messages[1].CallID != "c1" || messages[1].Output != "total 42" {
+	if messages[1].Type != clawconnect.MessageToolResult || messages[1].CallID != "c1" || messages[1].Output != "total 42" {
 		t.Fatalf("unexpected end message: %+v", messages[1])
 	}
 }
@@ -272,8 +274,8 @@ func TestCodexRawTurnStarted(t *testing.T) {
 	c.notificationProtocol = "unknown"
 
 	var gotStatus bool
-	c.onMessage = func(msg Message) {
-		if msg.Type == MessageStatus && msg.Status == "running" {
+	c.onMessage = func(msg clawconnect.Message) {
+		if msg.Type == clawconnect.MessageStatus && msg.Status == "running" {
 			gotStatus = true
 		}
 	}
@@ -355,8 +357,8 @@ func TestCodexRawItemCommandExecution(t *testing.T) {
 	c, _, _ := newTestCodexClient(t)
 	c.notificationProtocol = "raw"
 
-	var messages []Message
-	c.onMessage = func(msg Message) {
+	var messages []clawconnect.Message
+	c.onMessage = func(msg clawconnect.Message) {
 		messages = append(messages, msg)
 	}
 
@@ -366,10 +368,10 @@ func TestCodexRawItemCommandExecution(t *testing.T) {
 	if len(messages) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(messages))
 	}
-	if messages[0].Type != MessageToolUse || messages[0].Tool != "exec_command" || messages[0].Input["command"] != "git status" {
+	if messages[0].Type != clawconnect.MessageToolUse || messages[0].Tool != "exec_command" || messages[0].Input["command"] != "git status" {
 		t.Fatalf("unexpected start message: %+v", messages[0])
 	}
-	if messages[1].Type != MessageToolResult || messages[1].Output != "on branch main" {
+	if messages[1].Type != clawconnect.MessageToolResult || messages[1].Output != "on branch main" {
 		t.Fatalf("unexpected complete message: %+v", messages[1])
 	}
 }
@@ -383,8 +385,8 @@ func TestCodexRawItemAgentMessageFinalAnswer(t *testing.T) {
 
 	var gotText string
 	var turnDone bool
-	c.onMessage = func(msg Message) {
-		if msg.Type == MessageText {
+	c.onMessage = func(msg clawconnect.Message) {
+		if msg.Type == clawconnect.MessageText {
 			gotText = msg.Content
 		}
 	}
@@ -523,8 +525,8 @@ func TestCodexProtocolDetectionLegacyBlocksRaw(t *testing.T) {
 
 	c, _, _ := newTestCodexClient(t)
 
-	var messages []Message
-	c.onMessage = func(msg Message) {
+	var messages []clawconnect.Message
+	c.onMessage = func(msg clawconnect.Message) {
 		messages = append(messages, msg)
 	}
 

@@ -1,4 +1,4 @@
-package clawconnect
+package internal
 
 import (
 	"bytes"
@@ -6,13 +6,15 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+
+	clawconnect "github.com/alswl/claw-connect"
 )
 
 func TestClaudeHandleAssistantText(t *testing.T) {
 	t.Parallel()
 
-	b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
-	ch := make(chan Message, 10)
+	b := &ClaudeBackend{Cfg: clawconnect.Config{Logger: slog.Default()}}
+	ch := make(chan clawconnect.Message, 10)
 	var output strings.Builder
 
 	msg := claudeSDKMessage{
@@ -32,7 +34,7 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 	}
 	select {
 	case m := <-ch:
-		if m.Type != MessageText || m.Content != "Hello world" {
+		if m.Type != clawconnect.MessageText || m.Content != "Hello world" {
 			t.Fatalf("unexpected message: %+v", m)
 		}
 	default:
@@ -43,8 +45,8 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 func TestClaudeHandleAssistantToolUse(t *testing.T) {
 	t.Parallel()
 
-	b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
-	ch := make(chan Message, 10)
+	b := &ClaudeBackend{Cfg: clawconnect.Config{Logger: slog.Default()}}
+	ch := make(chan clawconnect.Message, 10)
 	var output strings.Builder
 
 	msg := claudeSDKMessage{
@@ -69,7 +71,7 @@ func TestClaudeHandleAssistantToolUse(t *testing.T) {
 	}
 	select {
 	case m := <-ch:
-		if m.Type != MessageToolUse || m.Tool != "Read" || m.CallID != "call-1" {
+		if m.Type != clawconnect.MessageToolUse || m.Tool != "Read" || m.CallID != "call-1" {
 			t.Fatalf("unexpected message: %+v", m)
 		}
 		if m.Input["path"] != "/tmp/foo" {
@@ -83,8 +85,8 @@ func TestClaudeHandleAssistantToolUse(t *testing.T) {
 func TestClaudeHandleUserToolResult(t *testing.T) {
 	t.Parallel()
 
-	b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
-	ch := make(chan Message, 10)
+	b := &ClaudeBackend{Cfg: clawconnect.Config{Logger: slog.Default()}}
+	ch := make(chan clawconnect.Message, 10)
 
 	msg := claudeSDKMessage{
 		Type: "user",
@@ -104,7 +106,7 @@ func TestClaudeHandleUserToolResult(t *testing.T) {
 
 	select {
 	case m := <-ch:
-		if m.Type != MessageToolResult || m.CallID != "call-1" {
+		if m.Type != clawconnect.MessageToolResult || m.CallID != "call-1" {
 			t.Fatalf("unexpected message: %+v", m)
 		}
 	default:
@@ -115,7 +117,7 @@ func TestClaudeHandleUserToolResult(t *testing.T) {
 func TestClaudeHandleControlRequestAutoApproves(t *testing.T) {
 	t.Parallel()
 
-	b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
+	b := &ClaudeBackend{Cfg: clawconnect.Config{Logger: slog.Default()}}
 
 	var written bytes.Buffer
 
@@ -152,8 +154,8 @@ func TestClaudeHandleControlRequestAutoApproves(t *testing.T) {
 func TestClaudeHandleAssistantInvalidJSON(t *testing.T) {
 	t.Parallel()
 
-	b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
-	ch := make(chan Message, 10)
+	b := &ClaudeBackend{Cfg: clawconnect.Config{Logger: slog.Default()}}
+	ch := make(chan clawconnect.Message, 10)
 	var output strings.Builder
 
 	msg := claudeSDKMessage{
@@ -177,11 +179,11 @@ func TestClaudeHandleAssistantInvalidJSON(t *testing.T) {
 func TestTrySendDropsWhenFull(t *testing.T) {
 	t.Parallel()
 
-	ch := make(chan Message, 1)
+	ch := make(chan clawconnect.Message, 1)
 	// Fill the channel
-	trySend(ch, Message{Type: MessageText, Content: "first"})
+	trySend(ch, clawconnect.Message{Type: clawconnect.MessageText, Content: "first"})
 	// This should not block
-	trySend(ch, Message{Type: MessageText, Content: "second"})
+	trySend(ch, clawconnect.Message{Type: clawconnect.MessageText, Content: "second"})
 
 	m := <-ch
 	if m.Content != "first" {
@@ -217,7 +219,6 @@ func TestBuildEnvNilExtras(t *testing.T) {
 		t.Fatal("expected at least system env vars")
 	}
 }
-
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()

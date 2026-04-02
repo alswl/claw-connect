@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/alswl/claw-connect/internal"
 )
 
 // Backend is the unified interface for executing prompts via coding agents.
@@ -87,9 +89,9 @@ func New(agentType string, cfg Config) (Backend, error) {
 
 	switch agentType {
 	case "claude":
-		return &claudeBackend{cfg: cfg}, nil
+		return &internal.ClaudeBackend{Cfg: cfg}, nil
 	case "codex":
-		return &codexBackend{cfg: cfg}, nil
+		return &internal.CodexBackend{Cfg: cfg}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codex)", agentType)
 	}
@@ -97,5 +99,5 @@ func New(agentType string, cfg Config) (Backend, error) {
 
 // DetectVersion runs the agent CLI with --version and returns the output.
 func DetectVersion(ctx context.Context, executablePath string) (string, error) {
-	return detectCLIVersion(ctx, executablePath)
+	return internal.DetectCLIVersion(ctx, executablePath)
 }

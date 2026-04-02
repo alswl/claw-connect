@@ -1,4 +1,4 @@
-package clawconnect
+package internal
 
 import (
 	"bufio"
@@ -10,16 +10,18 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	clawconnect "github.com/alswl/claw-connect"
 )
 
 // claudeBackend implements Backend by spawning the Claude Code CLI
 // with --output-format stream-json.
-type claudeBackend struct {
-	cfg Config
+type ClaudeBackend struct {
+	Cfg clawconnect.Config
 }
 
-func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	execPath := b.cfg.ExecutablePath
+func (b *ClaudeBackend) Execute(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+	execPath := b.Cfg.ExecutablePath
 	if execPath == "" {
 		execPath = "claude"
 	}
@@ -56,7 +58,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	cmd.Env = buildEnv(b.Cfg.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -68,17 +70,17 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		cancel()
 		return nil, fmt.Errorf("claude stdin pipe: %w", err)
 	}
-	cmd.Stderr = newLogWriter(b.cfg.Logger, "[claude:stderr] ")
+	cmd.Stderr = newLogWriter(b.Cfg.Logger, "[claude:stderr] ")
 
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 
-	b.cfg.Logger.Info("claude started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
+	b.Cfg.Logger.Info("claude started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
 
-	msgCh := make(chan Message, 256)
-	resCh := make(chan Result, 1)
+	msgCh := make(chan clawconnect.Message, 256)
+	resCh := make(chan clawconnect.Result, 1)
 
 	go func() {
 		defer cancel()
@@ -115,7 +117,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
 				}
-				trySend(msgCh, Message{Type: MessageStatus, Status: "running"})
+				trySend(msgCh, clawconnect.Message{Type: clawconnect.MessageStatus, Status: "running"})
 			case "result":
 				sessionID = msg.SessionID
 				if msg.ResultText != "" {
@@ -128,8 +130,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 			case "log":
 				if msg.Log != nil {
-					trySend(msgCh, Message{
-						Type:    MessageLog,
+					trySend(msgCh, clawconnect.Message{
+						Type:    clawconnect.MessageLog,
 						Level:   msg.Log.Level,
 						Content: msg.Log.Message,
 					})
@@ -154,9 +156,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			finalError = fmt.Sprintf("claude exited with error: %v", exitErr)
 		}
 
-		b.cfg.Logger.Info("claude finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.Cfg.Logger.Info("claude finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
-		resCh <- Result{
+		resCh <- clawconnect.Result{
 			Status:     finalStatus,
 			Output:     output.String(),
 			Error:      finalError,
@@ -165,10 +167,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}()
 
-	return &Session{Messages: msgCh, Result: resCh}, nil
+	return &clawconnect.Session{Messages: msgCh, Result: resCh}, nil
 }
 
-func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, output *strings.Builder) {
+func (b *ClaudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- clawconnect.Message, output *strings.Builder) {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
 		return
@@ -179,19 +181,19 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		case "text":
 			if block.Text != "" {
 				output.WriteString(block.Text)
-				trySend(ch, Message{Type: MessageText, Content: block.Text})
+				trySend(ch, clawconnect.Message{Type: clawconnect.MessageText, Content: block.Text})
 			}
 		case "thinking":
 			if block.Text != "" {
-				trySend(ch, Message{Type: MessageThinking, Content: block.Text})
+				trySend(ch, clawconnect.Message{Type: clawconnect.MessageThinking, Content: block.Text})
 			}
 		case "tool_use":
 			var input map[string]any
 			if block.Input != nil {
 				_ = json.Unmarshal(block.Input, &input)
 			}
-			trySend(ch, Message{
-				Type:   MessageToolUse,
+			trySend(ch, clawconnect.Message{
+				Type:   clawconnect.MessageToolUse,
 				Tool:   block.Name,
 				CallID: block.ID,
 				Input:  input,
@@ -200,7 +202,7 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 	}
 }
 
-func (b *claudeBackend) handleUser(msg claudeSDKMessage, ch chan<- Message) {
+func (b *ClaudeBackend) handleUser(msg claudeSDKMessage, ch chan<- clawconnect.Message) {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
 		return
@@ -212,8 +214,8 @@ func (b *claudeBackend) handleUser(msg claudeSDKMessage, ch chan<- Message) {
 			if block.Content != nil {
 				resultStr = string(block.Content)
 			}
-			trySend(ch, Message{
-				Type:   MessageToolResult,
+			trySend(ch, clawconnect.Message{
+				Type:   clawconnect.MessageToolResult,
 				CallID: block.ToolUseID,
 				Output: resultStr,
 			})
@@ -221,7 +223,7 @@ func (b *claudeBackend) handleUser(msg claudeSDKMessage, ch chan<- Message) {
 	}
 }
 
-func (b *claudeBackend) handleControlRequest(msg claudeSDKMessage, stdin interface{ Write([]byte) (int, error) }) {
+func (b *ClaudeBackend) handleControlRequest(msg claudeSDKMessage, stdin interface{ Write([]byte) (int, error) }) {
 	// Auto-approve all tool uses in autonomous/daemon mode.
 	var req claudeControlRequestPayload
 	if err := json.Unmarshal(msg.Request, &req); err != nil {
@@ -250,12 +252,12 @@ func (b *claudeBackend) handleControlRequest(msg claudeSDKMessage, stdin interfa
 
 	data, err := json.Marshal(response)
 	if err != nil {
-		b.cfg.Logger.Warn("claude: failed to marshal control response", "error", err)
+		b.Cfg.Logger.Warn("claude: failed to marshal control response", "error", err)
 		return
 	}
 	data = append(data, '\n')
 	if _, err := stdin.Write(data); err != nil {
-		b.cfg.Logger.Warn("claude: failed to write control response", "error", err)
+		b.Cfg.Logger.Warn("claude: failed to write control response", "error", err)
 	}
 }
 
@@ -287,7 +289,7 @@ type claudeLogEntry struct {
 }
 
 type claudeMessageContent struct {
-	Role    string             `json:"role"`
+	Role    string               `json:"role"`
 	Content []claudeContentBlock `json:"content"`
 }
 
@@ -309,7 +311,7 @@ type claudeControlRequestPayload struct {
 
 // ── Shared helpers ──
 
-func trySend(ch chan<- Message, msg Message) {
+func trySend(ch chan<- clawconnect.Message, msg clawconnect.Message) {
 	select {
 	case ch <- msg:
 	default:
@@ -326,7 +328,7 @@ func buildEnv(extra map[string]string) []string {
 	return env
 }
 
-func detectCLIVersion(ctx context.Context, execPath string) (string, error) {
+func DetectCLIVersion(ctx context.Context, execPath string) (string, error) {
 	cmd := exec.CommandContext(ctx, execPath, "--version")
 	data, err := cmd.Output()
 	if err != nil {

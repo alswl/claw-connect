@@ -1,4 +1,4 @@
-package clawconnect
+package internal
 
 import (
 	"bufio"
@@ -9,16 +9,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	clawconnect "github.com/alswl/claw-connect"
 )
 
 // codexBackend implements Backend by spawning `codex app-server --listen stdio://`
 // and communicating via JSON-RPC 2.0 over stdin/stdout.
-type codexBackend struct {
-	cfg Config
+type CodexBackend struct {
+	Cfg clawconnect.Config
 }
 
-func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-	execPath := b.cfg.ExecutablePath
+func (b *CodexBackend) Execute(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+	execPath := b.Cfg.ExecutablePath
 	if execPath == "" {
 		execPath = "codex"
 	}
@@ -36,7 +38,7 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	cmd.Env = buildEnv(b.Cfg.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -48,17 +50,17 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		cancel()
 		return nil, fmt.Errorf("codex stdin pipe: %w", err)
 	}
-	cmd.Stderr = newLogWriter(b.cfg.Logger, "[codex:stderr] ")
+	cmd.Stderr = newLogWriter(b.Cfg.Logger, "[codex:stderr] ")
 
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start codex: %w", err)
 	}
 
-	b.cfg.Logger.Info("codex started app-server", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
+	b.Cfg.Logger.Info("codex started app-server", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
 
-	msgCh := make(chan Message, 256)
-	resCh := make(chan Result, 1)
+	msgCh := make(chan clawconnect.Message, 256)
+	resCh := make(chan clawconnect.Result, 1)
 
 	var outputMu sync.Mutex
 	var output strings.Builder
@@ -68,12 +70,12 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	turnDone := make(chan bool, 1) // true = aborted
 
 	c := &codexClient{
-		cfg:                  b.cfg,
+		cfg:                  b.Cfg,
 		stdin:                stdin,
 		pending:              make(map[int]*pendingRPC),
 		notificationProtocol: "unknown",
-		onMessage: func(msg Message) {
-			if msg.Type == MessageText {
+		onMessage: func(msg clawconnect.Message) {
+			if msg.Type == clawconnect.MessageText {
 				outputMu.Lock()
 				output.WriteString(msg.Content)
 				outputMu.Unlock()
@@ -135,31 +137,31 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		if err != nil {
 			finalStatus = "failed"
 			finalError = fmt.Sprintf("codex initialize failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+			resCh <- clawconnect.Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 			return
 		}
 		c.notify("initialized")
 
 		// 2. Start thread
 		threadResult, err := c.request(runCtx, "thread/start", map[string]any{
-			"model":                    nilIfEmpty(opts.Model),
-			"modelProvider":            nil,
-			"profile":                  nil,
-			"cwd":                      opts.Cwd,
-			"approvalPolicy":           nil,
-			"sandbox":                  "workspace-write",
-			"config":                   nil,
-			"baseInstructions":         nil,
-			"developerInstructions":    nilIfEmpty(opts.SystemPrompt),
-			"compactPrompt":            nil,
-			"includeApplyPatchTool":    nil,
-			"experimentalRawEvents":    false,
-			"persistExtendedHistory":   true,
+			"model":                  nilIfEmpty(opts.Model),
+			"modelProvider":          nil,
+			"profile":                nil,
+			"cwd":                    opts.Cwd,
+			"approvalPolicy":         nil,
+			"sandbox":                "workspace-write",
+			"config":                 nil,
+			"baseInstructions":       nil,
+			"developerInstructions":  nilIfEmpty(opts.SystemPrompt),
+			"compactPrompt":          nil,
+			"includeApplyPatchTool":  nil,
+			"experimentalRawEvents":  false,
+			"persistExtendedHistory": true,
 		})
 		if err != nil {
 			finalStatus = "failed"
 			finalError = fmt.Sprintf("codex thread/start failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+			resCh <- clawconnect.Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 			return
 		}
 
@@ -167,11 +169,11 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		if threadID == "" {
 			finalStatus = "failed"
 			finalError = "codex thread/start returned no thread ID"
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+			resCh <- clawconnect.Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 			return
 		}
 		c.threadID = threadID
-		b.cfg.Logger.Info("codex thread started", "thread_id", threadID)
+		b.Cfg.Logger.Info("codex thread started", "thread_id", threadID)
 
 		// 3. Send turn and wait for completion
 		_, err = c.request(runCtx, "turn/start", map[string]any{
@@ -183,7 +185,7 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		if err != nil {
 			finalStatus = "failed"
 			finalError = fmt.Sprintf("codex turn/start failed: %v", err)
-			resCh <- Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
+			resCh <- clawconnect.Result{Status: finalStatus, Error: finalError, DurationMs: time.Since(startTime).Milliseconds()}
 			return
 		}
 
@@ -205,7 +207,7 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}
 
 		duration := time.Since(startTime)
-		b.cfg.Logger.Info("codex finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
+		b.Cfg.Logger.Info("codex finished", "pid", cmd.Process.Pid, "status", finalStatus, "duration", duration.Round(time.Millisecond).String())
 
 		// Close stdin and cancel context to signal the app-server to exit.
 		// Without this, the long-running codex process keeps stdout open and
@@ -220,7 +222,7 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		finalOutput := output.String()
 		outputMu.Unlock()
 
-		resCh <- Result{
+		resCh <- clawconnect.Result{
 			Status:     finalStatus,
 			Output:     finalOutput,
 			Error:      finalError,
@@ -228,20 +230,20 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}
 	}()
 
-	return &Session{Messages: msgCh, Result: resCh}, nil
+	return &clawconnect.Session{Messages: msgCh, Result: resCh}, nil
 }
 
 // ── codexClient: JSON-RPC 2.0 transport ──
 
 type codexClient struct {
-	cfg       Config
-	stdin     interface{ Write([]byte) (int, error) }
-	mu        sync.Mutex
-	nextID    int
-	pending   map[int]*pendingRPC
-	threadID  string
-	turnID    string
-	onMessage func(Message)
+	cfg        clawconnect.Config
+	stdin      interface{ Write([]byte) (int, error) }
+	mu         sync.Mutex
+	nextID     int
+	pending    map[int]*pendingRPC
+	threadID   string
+	turnID     string
+	onMessage  func(clawconnect.Message)
 	onTurnDone func(aborted bool)
 
 	notificationProtocol string // "unknown", "legacy", "raw"
@@ -450,19 +452,19 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 	case "task_started":
 		c.turnStarted = true
 		if c.onMessage != nil {
-			c.onMessage(Message{Type: MessageStatus, Status: "running"})
+			c.onMessage(clawconnect.Message{Type: clawconnect.MessageStatus, Status: "running"})
 		}
 	case "agent_message":
 		text, _ := msg["message"].(string)
 		if text != "" && c.onMessage != nil {
-			c.onMessage(Message{Type: MessageText, Content: text})
+			c.onMessage(clawconnect.Message{Type: clawconnect.MessageText, Content: text})
 		}
 	case "exec_command_begin":
 		callID, _ := msg["call_id"].(string)
 		command, _ := msg["command"].(string)
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolUse,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolUse,
 				Tool:   "exec_command",
 				CallID: callID,
 				Input:  map[string]any{"command": command},
@@ -472,8 +474,8 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 		callID, _ := msg["call_id"].(string)
 		output, _ := msg["output"].(string)
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolResult,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolResult,
 				Tool:   "exec_command",
 				CallID: callID,
 				Output: output,
@@ -482,8 +484,8 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 	case "patch_apply_begin":
 		callID, _ := msg["call_id"].(string)
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolUse,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolUse,
 				Tool:   "patch_apply",
 				CallID: callID,
 			})
@@ -491,8 +493,8 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 	case "patch_apply_end":
 		callID, _ := msg["call_id"].(string)
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolResult,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolResult,
 				Tool:   "patch_apply",
 				CallID: callID,
 			})
@@ -516,7 +518,7 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 			c.turnID = turnID
 		}
 		if c.onMessage != nil {
-			c.onMessage(Message{Type: MessageStatus, Status: "running"})
+			c.onMessage(clawconnect.Message{Type: clawconnect.MessageStatus, Status: "running"})
 		}
 
 	case "turn/completed":
@@ -567,8 +569,8 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 	case method == "item/started" && itemType == "commandExecution":
 		command, _ := item["command"].(string)
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolUse,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolUse,
 				Tool:   "exec_command",
 				CallID: itemID,
 				Input:  map[string]any{"command": command},
@@ -578,8 +580,8 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 	case method == "item/completed" && itemType == "commandExecution":
 		output, _ := item["aggregatedOutput"].(string)
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolResult,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolResult,
 				Tool:   "exec_command",
 				CallID: itemID,
 				Output: output,
@@ -588,8 +590,8 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 
 	case method == "item/started" && itemType == "fileChange":
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolUse,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolUse,
 				Tool:   "patch_apply",
 				CallID: itemID,
 			})
@@ -597,8 +599,8 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 
 	case method == "item/completed" && itemType == "fileChange":
 		if c.onMessage != nil {
-			c.onMessage(Message{
-				Type:   MessageToolResult,
+			c.onMessage(clawconnect.Message{
+				Type:   clawconnect.MessageToolResult,
 				Tool:   "patch_apply",
 				CallID: itemID,
 			})
@@ -607,7 +609,7 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 	case method == "item/completed" && itemType == "agentMessage":
 		text, _ := item["text"].(string)
 		if text != "" && c.onMessage != nil {
-			c.onMessage(Message{Type: MessageText, Content: text})
+			c.onMessage(clawconnect.Message{Type: clawconnect.MessageText, Content: text})
 		}
 		phase, _ := item["phase"].(string)
 		if phase == "final_answer" && c.turnStarted {

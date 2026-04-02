@@ -1,4 +1,4 @@
-package clawconnect
+package internal
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	clawconnect "github.com/alswl/claw-connect"
 	"github.com/gorilla/websocket"
 )
 
@@ -19,24 +20,24 @@ import (
 
 // fakeBackend implements Backend for testing.
 type fakeBackend struct {
-	executeFn func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error)
+	executeFn func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error)
 }
 
-func (f *fakeBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+func (f *fakeBackend) Execute(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
 	return f.executeFn(ctx, prompt, opts)
 }
 
 // fakeSession creates a Session that emits the given messages then sends result.
-func fakeSession(messages []Message, result Result) *Session {
-	msgCh := make(chan Message, len(messages))
-	resCh := make(chan Result, 1)
+func fakeSession(messages []clawconnect.Message, result clawconnect.Result) *clawconnect.Session {
+	msgCh := make(chan clawconnect.Message, len(messages))
+	resCh := make(chan clawconnect.Result, 1)
 	for _, m := range messages {
 		msgCh <- m
 	}
 	close(msgCh)
 	resCh <- result
 	close(resCh)
-	return &Session{Messages: msgCh, Result: resCh}
+	return &clawconnect.Session{Messages: msgCh, Result: resCh}
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -67,7 +68,7 @@ func decodePayload(msg wireMessage, target any) error {
 	return json.Unmarshal(msg.Payload, target)
 }
 
-func defaultRemoteConfig(srv *httptest.Server, backend Backend) RemoteConfig {
+func defaultRemoteConfig(srv *httptest.Server, backend clawconnect.Backend) RemoteConfig {
 	return RemoteConfig{
 		ServerURL: wsURL(srv),
 		Backend:   backend,
@@ -87,8 +88,8 @@ func defaultRemoteConfig(srv *httptest.Server, backend Backend) RemoteConfig {
 func TestNewRemoteClientDefaults(t *testing.T) {
 	t.Parallel()
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-		return fakeSession(nil, Result{Status: "completed"}), nil
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+		return fakeSession(nil, clawconnect.Result{Status: "completed"}), nil
 	}}
 
 	c, err := NewRemoteClient(RemoteConfig{
@@ -238,16 +239,16 @@ func TestMessageTypeToWire(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		in  MessageType
+		in  clawconnect.MessageType
 		out string
 	}{
-		{MessageText, "text"},
-		{MessageThinking, "thinking"},
-		{MessageToolUse, "tool_use"},
-		{MessageToolResult, "tool_result"},
-		{MessageStatus, "status"},
-		{MessageError, "error"},
-		{MessageLog, "log"},
+		{clawconnect.MessageText, "text"},
+		{clawconnect.MessageThinking, "thinking"},
+		{clawconnect.MessageToolUse, "tool_use"},
+		{clawconnect.MessageToolResult, "tool_result"},
+		{clawconnect.MessageStatus, "status"},
+		{clawconnect.MessageError, "error"},
+		{clawconnect.MessageLog, "log"},
 	}
 	for _, tt := range tests {
 		if got := messageTypeToWire(tt.in); got != tt.out {
@@ -296,13 +297,13 @@ func TestBackoffConfigPreservesCustom(t *testing.T) {
 func TestRemoteClientExecuteEndToEnd(t *testing.T) {
 	t.Parallel()
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
 		return fakeSession(
-			[]Message{
-				{Type: MessageText, Content: "working on it"},
-				{Type: MessageToolUse, Tool: "Read", CallID: "c1"},
+			[]clawconnect.Message{
+				{Type: clawconnect.MessageText, Content: "working on it"},
+				{Type: clawconnect.MessageToolUse, Tool: "Read", CallID: "c1"},
 			},
-			Result{Status: "completed", Output: "done"},
+			clawconnect.Result{Status: "completed", Output: "done"},
 		), nil
 	}}
 
@@ -405,19 +406,19 @@ func TestRemoteClientCancel(t *testing.T) {
 
 	executeCalled := make(chan struct{})
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-		msgCh := make(chan Message, 256)
-		resCh := make(chan Result, 1)
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+		msgCh := make(chan clawconnect.Message, 256)
+		resCh := make(chan clawconnect.Result, 1)
 
 		go func() {
 			defer close(msgCh)
 			defer close(resCh)
 			close(executeCalled)
 			<-ctx.Done()
-			resCh <- Result{Status: "aborted"}
+			resCh <- clawconnect.Result{Status: "aborted"}
 		}()
 
-		return &Session{Messages: msgCh, Result: resCh}, nil
+		return &clawconnect.Session{Messages: msgCh, Result: resCh}, nil
 	}}
 
 	done := make(chan struct{})
@@ -480,8 +481,8 @@ func TestRemoteClientReconnect(t *testing.T) {
 
 	var connectCount atomic.Int32
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-		return fakeSession(nil, Result{Status: "completed", Output: prompt}), nil
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+		return fakeSession(nil, clawconnect.Result{Status: "completed", Output: prompt}), nil
 	}}
 
 	done := make(chan struct{})
@@ -543,10 +544,10 @@ func TestRemoteClientConcurrentExecutions(t *testing.T) {
 
 	var execCount atomic.Int32
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
 		execCount.Add(1)
 		time.Sleep(50 * time.Millisecond)
-		return fakeSession(nil, Result{Status: "completed", Output: prompt}), nil
+		return fakeSession(nil, clawconnect.Result{Status: "completed", Output: prompt}), nil
 	}}
 
 	var results sync.Map
@@ -613,9 +614,9 @@ func TestRemoteClientMaxConcurrent(t *testing.T) {
 	started := make(chan struct{})
 	block := make(chan struct{})
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-		msgCh := make(chan Message)
-		resCh := make(chan Result, 1)
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+		msgCh := make(chan clawconnect.Message)
+		resCh := make(chan clawconnect.Result, 1)
 
 		go func() {
 			defer close(msgCh)
@@ -627,10 +628,10 @@ func TestRemoteClientMaxConcurrent(t *testing.T) {
 			case <-block:
 			case <-ctx.Done():
 			}
-			resCh <- Result{Status: "completed"}
+			resCh <- clawconnect.Result{Status: "completed"}
 		}()
 
-		return &Session{Messages: msgCh, Result: resCh}, nil
+		return &clawconnect.Session{Messages: msgCh, Result: resCh}, nil
 	}}
 
 	gotError := make(chan string, 1)
@@ -698,19 +699,19 @@ func TestRemoteClientGracefulShutdown(t *testing.T) {
 
 	executeCalled := make(chan struct{})
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-		msgCh := make(chan Message, 256)
-		resCh := make(chan Result, 1)
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+		msgCh := make(chan clawconnect.Message, 256)
+		resCh := make(chan clawconnect.Result, 1)
 
 		go func() {
 			defer close(msgCh)
 			defer close(resCh)
 			close(executeCalled)
 			<-ctx.Done()
-			resCh <- Result{Status: "aborted"}
+			resCh <- clawconnect.Result{Status: "aborted"}
 		}()
 
-		return &Session{Messages: msgCh, Result: resCh}, nil
+		return &clawconnect.Session{Messages: msgCh, Result: resCh}, nil
 	}}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -758,8 +759,8 @@ func TestRemoteClientGracefulShutdown(t *testing.T) {
 func TestRemoteClientMalformedMessage(t *testing.T) {
 	t.Parallel()
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
-		return fakeSession(nil, Result{Status: "completed", Output: "ok"}), nil
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
+		return fakeSession(nil, clawconnect.Result{Status: "completed", Output: "ok"}), nil
 	}}
 
 	done := make(chan struct{})
@@ -854,9 +855,9 @@ func TestRemoteClientTitleDescriptionFallback(t *testing.T) {
 
 	var gotPrompt string
 
-	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts clawconnect.ExecOptions) (*clawconnect.Session, error) {
 		gotPrompt = prompt
-		return fakeSession(nil, Result{Status: "completed"}), nil
+		return fakeSession(nil, clawconnect.Result{Status: "completed"}), nil
 	}}
 
 	done := make(chan struct{})

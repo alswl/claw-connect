@@ -1,4 +1,4 @@
-package clawconnect
+package internal
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	clawconnect "github.com/alswl/claw-connect"
 	"github.com/gorilla/websocket"
 )
 
@@ -39,7 +40,7 @@ type RemoteConfig struct {
 	ServerURL string
 
 	// Backend is the agent backend used to execute incoming prompts.
-	Backend Backend
+	Backend clawconnect.Backend
 
 	// Logger for structured logging. Defaults to slog.Default() if nil.
 	Logger *slog.Logger
@@ -85,12 +86,12 @@ type RemoteClient struct {
 // Wire protocol event types, following the multica "namespace:action" convention.
 // See: github.com/multica-ai/multica server/pkg/protocol/events.go
 const (
-	EventTaskDispatch  = "task:dispatch"
-	EventTaskMessage   = "task:message"
-	EventTaskCompleted = "task:completed"
-	EventTaskFailed    = "task:failed"
-	EventTaskCancelled = "task:cancelled"
-	EventTaskProgress  = "task:progress"
+	EventTaskDispatch    = "task:dispatch"
+	EventTaskMessage     = "task:message"
+	EventTaskCompleted   = "task:completed"
+	EventTaskFailed      = "task:failed"
+	EventTaskCancelled   = "task:cancelled"
+	EventTaskProgress    = "task:progress"
 	EventDaemonRegister  = "daemon:register"
 	EventDaemonHeartbeat = "daemon:heartbeat"
 )
@@ -115,7 +116,7 @@ type TaskDispatchPayload struct {
 type TaskMessagePayload struct {
 	TaskID  string         `json:"task_id"`
 	Seq     int            `json:"seq"`
-	Type    string         `json:"type"`              // "text", "thinking", "tool_use", "tool_result", "status", "error", "log"
+	Type    string         `json:"type"` // "text", "thinking", "tool_use", "tool_result", "status", "error", "log"
 	Tool    string         `json:"tool,omitempty"`
 	Content string         `json:"content,omitempty"`
 	Input   map[string]any `json:"input,omitempty"`
@@ -161,11 +162,11 @@ type wireExecOptions struct {
 	ResumeSessionID string `json:"resume_session_id,omitempty"`
 }
 
-func (w *wireExecOptions) toExecOptions() ExecOptions {
+func (w *wireExecOptions) toExecOptions() clawconnect.ExecOptions {
 	if w == nil {
-		return ExecOptions{}
+		return clawconnect.ExecOptions{}
 	}
-	return ExecOptions{
+	return clawconnect.ExecOptions{
 		Cwd:             w.Cwd,
 		Model:           w.Model,
 		SystemPrompt:    w.SystemPrompt,
@@ -185,11 +186,11 @@ func marshalEnvelope(eventType string, payload any) (wireMessage, error) {
 }
 
 // messageTypeToWire converts a MessageType to wire format string.
-func messageTypeToWire(mt MessageType) string {
+func messageTypeToWire(mt clawconnect.MessageType) string {
 	switch mt {
-	case MessageToolUse:
+	case clawconnect.MessageToolUse:
 		return "tool_use"
-	case MessageToolResult:
+	case clawconnect.MessageToolResult:
 		return "tool_result"
 	default:
 		return string(mt)
@@ -421,7 +422,7 @@ func (c *RemoteClient) pingLoop(ctx context.Context, conn *websocket.Conn) {
 }
 
 // handleExecute processes a single execute command from the server.
-func (c *RemoteClient) handleExecute(sessionCtx context.Context, id, prompt string, opts ExecOptions) {
+func (c *RemoteClient) handleExecute(sessionCtx context.Context, id, prompt string, opts clawconnect.ExecOptions) {
 	c.inflightWg.Add(1)
 	defer c.inflightWg.Done()
 
