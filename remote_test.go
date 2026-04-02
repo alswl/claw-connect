@@ -46,6 +46,42 @@ func wsURL(s *httptest.Server) string {
 	return "ws" + strings.TrimPrefix(s.URL, "http")
 }
 
+// sendWireMessage sends a wireMessage envelope to the WebSocket connection.
+func sendWireMessage(conn *websocket.Conn, eventType string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return conn.WriteJSON(wireMessage{Type: eventType, Payload: data})
+}
+
+// readWireMessage reads and parses a wireMessage from the WebSocket connection.
+func readWireMessage(conn *websocket.Conn) (wireMessage, error) {
+	var msg wireMessage
+	err := conn.ReadJSON(&msg)
+	return msg, err
+}
+
+// decodePayload unmarshals a wireMessage payload into the given target.
+func decodePayload(msg wireMessage, target any) error {
+	return json.Unmarshal(msg.Payload, target)
+}
+
+func defaultRemoteConfig(srv *httptest.Server, backend Backend) RemoteConfig {
+	return RemoteConfig{
+		ServerURL: wsURL(srv),
+		Backend:   backend,
+		Logger:    slog.Default(),
+		ReconnectBackoff: &BackoffConfig{
+			InitialDelay: time.Millisecond,
+			MaxDelay:     5 * time.Millisecond,
+			Factor:       2.0,
+		},
+		PingInterval: 10 * time.Second,
+		PongTimeout:  5 * time.Second,
+	}
+}
+
 // --- Unit Tests ---
 
 func TestNewRemoteClientDefaults(t *testing.T) {
@@ -141,29 +177,30 @@ func TestWireExecOptionsNilConversion(t *testing.T) {
 	}
 }
 
-func TestRemoteEnvelopeMarshalExecute(t *testing.T) {
+func TestMarshalEnvelope(t *testing.T) {
 	t.Parallel()
 
-	env := remoteEnvelope{
-		Type:   remoteTypeExecute,
-		ID:     "req-1",
+	payload := TaskDispatchPayload{
+		TaskID: "t-1",
 		Prompt: "hello",
 		Options: &wireExecOptions{
 			Cwd:       "/project",
 			TimeoutMs: 5000,
 		},
 	}
-
-	data, err := json.Marshal(env)
+	env, err := marshalEnvelope(EventTaskDispatch, payload)
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("marshalEnvelope: %v", err)
+	}
+	if env.Type != EventTaskDispatch {
+		t.Fatalf("expected type %q, got %q", EventTaskDispatch, env.Type)
 	}
 
-	var decoded remoteEnvelope
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	var decoded TaskDispatchPayload
+	if err := json.Unmarshal(env.Payload, &decoded); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if decoded.Type != remoteTypeExecute || decoded.ID != "req-1" || decoded.Prompt != "hello" {
+	if decoded.TaskID != "t-1" || decoded.Prompt != "hello" {
 		t.Fatalf("unexpected decoded: %+v", decoded)
 	}
 	if decoded.Options == nil || decoded.Options.Cwd != "/project" {
@@ -171,27 +208,51 @@ func TestRemoteEnvelopeMarshalExecute(t *testing.T) {
 	}
 }
 
-func TestRemoteEnvelopeMarshalMessage(t *testing.T) {
+func TestMarshalEnvelopeTaskMessage(t *testing.T) {
 	t.Parallel()
 
-	msg := Message{Type: MessageText, Content: "hi"}
-	env := remoteEnvelope{
-		Type:    remoteTypeMessage,
-		ID:      "req-1",
-		Message: &msg,
+	payload := TaskMessagePayload{
+		TaskID:  "t-1",
+		Seq:     1,
+		Type:    "text",
+		Content: "hi",
 	}
-
-	data, err := json.Marshal(env)
+	env, err := marshalEnvelope(EventTaskMessage, payload)
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("marshalEnvelope: %v", err)
+	}
+	if env.Type != EventTaskMessage {
+		t.Fatalf("expected type %q, got %q", EventTaskMessage, env.Type)
 	}
 
-	var decoded remoteEnvelope
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	var decoded TaskMessagePayload
+	if err := json.Unmarshal(env.Payload, &decoded); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if decoded.Message == nil || decoded.Message.Content != "hi" {
-		t.Fatalf("unexpected message: %+v", decoded.Message)
+	if decoded.Content != "hi" || decoded.Seq != 1 {
+		t.Fatalf("unexpected decoded: %+v", decoded)
+	}
+}
+
+func TestMessageTypeToWire(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in  MessageType
+		out string
+	}{
+		{MessageText, "text"},
+		{MessageThinking, "thinking"},
+		{MessageToolUse, "tool_use"},
+		{MessageToolResult, "tool_result"},
+		{MessageStatus, "status"},
+		{MessageError, "error"},
+		{MessageLog, "log"},
+	}
+	for _, tt := range tests {
+		if got := messageTypeToWire(tt.in); got != tt.out {
+			t.Errorf("messageTypeToWire(%q) = %q, want %q", tt.in, got, tt.out)
+		}
 	}
 }
 
@@ -245,8 +306,7 @@ func TestRemoteClientExecuteEndToEnd(t *testing.T) {
 		), nil
 	}}
 
-	// Start a test WebSocket server.
-	var received []remoteEnvelope
+	var received []wireMessage
 	var mu sync.Mutex
 	done := make(chan struct{})
 
@@ -258,30 +318,25 @@ func TestRemoteClientExecuteEndToEnd(t *testing.T) {
 		}
 		defer conn.Close()
 
-		// Send an execute command.
-		cmd := remoteEnvelope{
-			Type:   remoteTypeExecute,
-			ID:     "req-1",
+		// Send task:dispatch.
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID: "t-1",
 			Prompt: "do something",
 			Options: &wireExecOptions{
 				Cwd: "/tmp",
 			},
-		}
-		if err := conn.WriteJSON(cmd); err != nil {
-			t.Errorf("write: %v", err)
-			return
-		}
+		})
 
-		// Read all responses until we get the result.
+		// Read all responses until we get task:completed.
 		for {
-			var env remoteEnvelope
-			if err := conn.ReadJSON(&env); err != nil {
+			msg, err := readWireMessage(conn)
+			if err != nil {
 				break
 			}
 			mu.Lock()
-			received = append(received, env)
+			received = append(received, msg)
 			mu.Unlock()
-			if env.Type == remoteTypeResult {
+			if msg.Type == EventTaskCompleted {
 				close(done)
 				return
 			}
@@ -289,18 +344,7 @@ func TestRemoteClientExecuteEndToEnd(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := NewRemoteClient(RemoteConfig{
-		ServerURL: wsURL(srv),
-		Backend:   backend,
-		Logger:    slog.Default(),
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-		PongTimeout:  5 * time.Second,
-	})
+	c, err := NewRemoteClient(defaultRemoteConfig(srv, backend))
 	if err != nil {
 		t.Fatalf("NewRemoteClient: %v", err)
 	}
@@ -322,20 +366,37 @@ func TestRemoteClientExecuteEndToEnd(t *testing.T) {
 	defer mu.Unlock()
 
 	if len(received) < 3 {
-		t.Fatalf("expected at least 3 envelopes (2 messages + 1 result), got %d", len(received))
+		t.Fatalf("expected at least 3 envelopes (2 messages + 1 completed), got %d", len(received))
 	}
 
-	// First two should be message type.
-	if received[0].Type != remoteTypeMessage || received[0].Message.Content != "working on it" {
-		t.Fatalf("unexpected first message: %+v", received[0])
+	// First two should be task:message.
+	if received[0].Type != EventTaskMessage {
+		t.Fatalf("expected task:message, got %q", received[0].Type)
 	}
-	if received[1].Type != remoteTypeMessage || received[1].Message.Tool != "Read" {
-		t.Fatalf("unexpected second message: %+v", received[1])
+	var msg1 TaskMessagePayload
+	decodePayload(received[0], &msg1)
+	if msg1.Content != "working on it" || msg1.Type != "text" || msg1.Seq != 1 {
+		t.Fatalf("unexpected first message: %+v", msg1)
 	}
-	// Last should be result.
+
+	if received[1].Type != EventTaskMessage {
+		t.Fatalf("expected task:message, got %q", received[1].Type)
+	}
+	var msg2 TaskMessagePayload
+	decodePayload(received[1], &msg2)
+	if msg2.Tool != "Read" || msg2.Type != "tool_use" || msg2.Seq != 2 {
+		t.Fatalf("unexpected second message: %+v", msg2)
+	}
+
+	// Last should be task:completed.
 	last := received[len(received)-1]
-	if last.Type != remoteTypeResult || last.Result.Status != "completed" || last.Result.Output != "done" {
-		t.Fatalf("unexpected result: %+v", last)
+	if last.Type != EventTaskCompleted {
+		t.Fatalf("expected task:completed, got %q", last.Type)
+	}
+	var result TaskCompletedPayload
+	decodePayload(last, &result)
+	if result.Status != "completed" || result.Output != "done" || result.TaskID != "t-1" {
+		t.Fatalf("unexpected result: %+v", result)
 	}
 }
 
@@ -352,7 +413,6 @@ func TestRemoteClientCancel(t *testing.T) {
 			defer close(msgCh)
 			defer close(resCh)
 			close(executeCalled)
-			// Wait for context cancellation.
 			<-ctx.Done()
 			resCh <- Result{Status: "aborted"}
 		}()
@@ -369,47 +429,39 @@ func TestRemoteClientCancel(t *testing.T) {
 		}
 		defer conn.Close()
 
-		// Send execute.
-		conn.WriteJSON(remoteEnvelope{
-			Type:   remoteTypeExecute,
-			ID:     "req-cancel",
+		// Send task:dispatch.
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID: "t-cancel",
 			Prompt: "long task",
 		})
 
 		// Wait for execution to start.
 		<-executeCalled
 
-		// Send cancel.
-		conn.WriteJSON(remoteEnvelope{
-			Type: remoteTypeCancel,
-			ID:   "req-cancel",
+		// Send task:cancelled.
+		sendWireMessage(conn, EventTaskCancelled, TaskCancelledPayload{
+			TaskID: "t-cancel",
 		})
 
 		// Read the result.
 		for {
-			var env remoteEnvelope
-			if err := conn.ReadJSON(&env); err != nil {
+			msg, err := readWireMessage(conn)
+			if err != nil {
 				break
 			}
-			if env.Type == remoteTypeResult && env.Result.Status == "aborted" {
-				close(done)
-				return
+			if msg.Type == EventTaskCompleted {
+				var p TaskCompletedPayload
+				decodePayload(msg, &p)
+				if p.Status == "aborted" {
+					close(done)
+					return
+				}
 			}
 		}
 	}))
 	defer srv.Close()
 
-	c, _ := NewRemoteClient(RemoteConfig{
-		ServerURL: wsURL(srv),
-		Backend:   backend,
-		Logger:    slog.Default(),
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-	})
+	c, _ := NewRemoteClient(defaultRemoteConfig(srv, backend))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -450,18 +502,17 @@ func TestRemoteClientReconnect(t *testing.T) {
 
 		// Second connection: send a command and verify it works.
 		defer conn.Close()
-		conn.WriteJSON(remoteEnvelope{
-			Type:   remoteTypeExecute,
-			ID:     "req-reconnect",
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID: "t-reconnect",
 			Prompt: "after reconnect",
 		})
 
 		for {
-			var env remoteEnvelope
-			if err := conn.ReadJSON(&env); err != nil {
+			msg, err := readWireMessage(conn)
+			if err != nil {
 				break
 			}
-			if env.Type == remoteTypeResult {
+			if msg.Type == EventTaskCompleted {
 				close(done)
 				return
 			}
@@ -469,17 +520,7 @@ func TestRemoteClientReconnect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewRemoteClient(RemoteConfig{
-		ServerURL: wsURL(srv),
-		Backend:   backend,
-		Logger:    slog.Default(),
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-	})
+	c, _ := NewRemoteClient(defaultRemoteConfig(srv, backend))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -504,7 +545,6 @@ func TestRemoteClientConcurrentExecutions(t *testing.T) {
 
 	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
 		execCount.Add(1)
-		// Simulate some work.
 		time.Sleep(50 * time.Millisecond)
 		return fakeSession(nil, Result{Status: "completed", Output: prompt}), nil
 	}}
@@ -519,11 +559,11 @@ func TestRemoteClientConcurrentExecutions(t *testing.T) {
 		}
 		defer conn.Close()
 
-		// Send 3 execute commands concurrently.
+		// Send 3 task:dispatch commands.
 		for i := 0; i < 3; i++ {
-			conn.WriteJSON(remoteEnvelope{
-				Type:   remoteTypeExecute,
-				ID:     "req-" + string(rune('a'+i)),
+			id := "t-" + string(rune('a'+i))
+			sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+				TaskID: id,
 				Prompt: "task-" + string(rune('a'+i)),
 			})
 		}
@@ -531,12 +571,14 @@ func TestRemoteClientConcurrentExecutions(t *testing.T) {
 		// Read all results.
 		resultCount := 0
 		for {
-			var env remoteEnvelope
-			if err := conn.ReadJSON(&env); err != nil {
+			msg, err := readWireMessage(conn)
+			if err != nil {
 				break
 			}
-			if env.Type == remoteTypeResult {
-				results.Store(env.ID, env.Result.Output)
+			if msg.Type == EventTaskCompleted {
+				var p TaskCompletedPayload
+				decodePayload(msg, &p)
+				results.Store(p.TaskID, p.Output)
 				resultCount++
 				if resultCount == 3 {
 					close(done)
@@ -547,17 +589,7 @@ func TestRemoteClientConcurrentExecutions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, _ := NewRemoteClient(RemoteConfig{
-		ServerURL: wsURL(srv),
-		Backend:   backend,
-		Logger:    slog.Default(),
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-	})
+	c, _ := NewRemoteClient(defaultRemoteConfig(srv, backend))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -610,46 +642,41 @@ func TestRemoteClientMaxConcurrent(t *testing.T) {
 		}
 		defer conn.Close()
 
-		// Send first command (will block).
-		conn.WriteJSON(remoteEnvelope{
-			Type: remoteTypeExecute, ID: "req-1", Prompt: "task1",
+		// Send first task (will block).
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID: "t-1", Prompt: "task1",
 		})
 
 		// Wait for it to start executing.
 		<-started
 
-		// Send second command (should be rejected).
-		conn.WriteJSON(remoteEnvelope{
-			Type: remoteTypeExecute, ID: "req-2", Prompt: "task2",
+		// Send second task (should be rejected).
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID: "t-2", Prompt: "task2",
 		})
 
-		// Read the error.
+		// Read the task:failed error.
 		for {
-			var env remoteEnvelope
-			if err := conn.ReadJSON(&env); err != nil {
+			msg, err := readWireMessage(conn)
+			if err != nil {
 				break
 			}
-			if env.Type == remoteTypeError && env.ID == "req-2" {
-				gotError <- env.Error
-				close(block)
-				return
+			if msg.Type == EventTaskFailed {
+				var p TaskFailedPayload
+				decodePayload(msg, &p)
+				if p.TaskID == "t-2" {
+					gotError <- p.Error
+					close(block)
+					return
+				}
 			}
 		}
 	}))
 	defer srv.Close()
 
-	c, _ := NewRemoteClient(RemoteConfig{
-		ServerURL:     wsURL(srv),
-		Backend:       backend,
-		Logger:        slog.Default(),
-		MaxConcurrent: 1,
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-	})
+	cfg := defaultRemoteConfig(srv, backend)
+	cfg.MaxConcurrent = 1
+	c, _ := NewRemoteClient(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -693,31 +720,20 @@ func TestRemoteClientGracefulShutdown(t *testing.T) {
 		}
 		defer conn.Close()
 
-		conn.WriteJSON(remoteEnvelope{
-			Type: remoteTypeExecute, ID: "req-shutdown", Prompt: "long task",
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID: "t-shutdown", Prompt: "long task",
 		})
 
 		// Keep reading until connection closes.
 		for {
-			var env remoteEnvelope
-			if err := conn.ReadJSON(&env); err != nil {
+			if _, err := readWireMessage(conn); err != nil {
 				return
 			}
 		}
 	}))
 	defer srv.Close()
 
-	c, _ := NewRemoteClient(RemoteConfig{
-		ServerURL: wsURL(srv),
-		Backend:   backend,
-		Logger:    slog.Default(),
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-	})
+	c, _ := NewRemoteClient(defaultRemoteConfig(srv, backend))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -726,10 +742,7 @@ func TestRemoteClientGracefulShutdown(t *testing.T) {
 		runDone <- c.Run(ctx)
 	}()
 
-	// Wait for execution to start.
 	<-executeCalled
-
-	// Cancel context -> triggers graceful shutdown.
 	cancel()
 
 	select {
@@ -762,37 +775,31 @@ func TestRemoteClientMalformedMessage(t *testing.T) {
 		conn.WriteMessage(websocket.TextMessage, []byte(`{not json}`))
 
 		// Send unknown type.
-		conn.WriteJSON(remoteEnvelope{Type: "unknown_type"})
+		conn.WriteJSON(wireMessage{Type: "unknown_type", Payload: json.RawMessage(`{}`)})
 
 		// Send valid command to verify client still works.
-		conn.WriteJSON(remoteEnvelope{
-			Type: remoteTypeExecute, ID: "req-after-bad", Prompt: "hello",
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID: "t-after-bad", Prompt: "hello",
 		})
 
 		for {
-			var env remoteEnvelope
-			if err := conn.ReadJSON(&env); err != nil {
+			msg, err := readWireMessage(conn)
+			if err != nil {
 				break
 			}
-			if env.Type == remoteTypeResult && env.ID == "req-after-bad" {
-				close(done)
-				return
+			if msg.Type == EventTaskCompleted {
+				var p TaskCompletedPayload
+				decodePayload(msg, &p)
+				if p.TaskID == "t-after-bad" {
+					close(done)
+					return
+				}
 			}
 		}
 	}))
 	defer srv.Close()
 
-	c, _ := NewRemoteClient(RemoteConfig{
-		ServerURL: wsURL(srv),
-		Backend:   backend,
-		Logger:    slog.Default(),
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-	})
+	c, _ := NewRemoteClient(defaultRemoteConfig(srv, backend))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -823,18 +830,9 @@ func TestRemoteClientHeaders(t *testing.T) {
 
 	backend := &fakeBackend{}
 
-	c, _ := NewRemoteClient(RemoteConfig{
-		ServerURL: wsURL(srv),
-		Backend:   backend,
-		Logger:    slog.Default(),
-		Headers:   map[string]string{"Authorization": "Bearer token-123"},
-		ReconnectBackoff: &BackoffConfig{
-			InitialDelay: time.Millisecond,
-			MaxDelay:     5 * time.Millisecond,
-			Factor:       2.0,
-		},
-		PingInterval: 10 * time.Second,
-	})
+	cfg := defaultRemoteConfig(srv, backend)
+	cfg.Headers = map[string]string{"Authorization": "Bearer token-123"}
+	c, _ := NewRemoteClient(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -848,5 +846,63 @@ func TestRemoteClientHeaders(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for header")
+	}
+}
+
+func TestRemoteClientTitleDescriptionFallback(t *testing.T) {
+	t.Parallel()
+
+	var gotPrompt string
+
+	backend := &fakeBackend{executeFn: func(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
+		gotPrompt = prompt
+		return fakeSession(nil, Result{Status: "completed"}), nil
+	}}
+
+	done := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Send task:dispatch with title+description (no prompt).
+		sendWireMessage(conn, EventTaskDispatch, TaskDispatchPayload{
+			TaskID:      "t-title",
+			Title:       "Fix the bug",
+			Description: "There is a null pointer in main.go",
+		})
+
+		for {
+			msg, err := readWireMessage(conn)
+			if err != nil {
+				break
+			}
+			if msg.Type == EventTaskCompleted {
+				close(done)
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+
+	c, _ := NewRemoteClient(defaultRemoteConfig(srv, backend))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go c.Run(ctx)
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timed out")
+	}
+
+	expected := "Fix the bug\n\nThere is a null pointer in main.go"
+	if gotPrompt != expected {
+		t.Fatalf("expected prompt %q, got %q", expected, gotPrompt)
 	}
 }

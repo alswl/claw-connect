@@ -245,15 +245,16 @@ func main() {
 
 ### Wire Protocol
 
-The WebSocket protocol uses simple JSON envelopes:
+Compatible with [multica](https://github.com/multica-ai/multica) protocol. All messages use `{"type": "namespace:action", "payload": {...}}` envelope format. See [SCHEMA.json](SCHEMA.json) for full JSON Schema.
 
 | Direction | Type | Description |
 |-----------|------|-------------|
-| Server → Client | `execute` | Execute a prompt: `{"type":"execute","id":"req-123","prompt":"...","options":{...}}` |
-| Server → Client | `cancel` | Cancel a running execution: `{"type":"cancel","id":"req-123"}` |
-| Client → Server | `message` | Streaming event: `{"type":"message","id":"req-123","message":{...}}` |
-| Client → Server | `result` | Final result: `{"type":"result","id":"req-123","result":{...}}` |
-| Client → Server | `error` | Execution error: `{"type":"error","id":"req-123","error":"..."}` |
+| Server → Client | `task:dispatch` | Execute a task: `{"type":"task:dispatch","payload":{"task_id":"...","prompt":"..."}}` |
+| Server → Client | `task:cancelled` | Cancel a running task: `{"type":"task:cancelled","payload":{"task_id":"..."}}` |
+| Client → Server | `task:message` | Streaming event: `{"type":"task:message","payload":{"task_id":"...","seq":1,"type":"text",...}}` |
+| Client → Server | `task:completed` | Task finished: `{"type":"task:completed","payload":{"task_id":"...","status":"completed",...}}` |
+| Client → Server | `task:failed` | Task error: `{"type":"task:failed","payload":{"task_id":"...","error":"..."}}` |
+| Client → Server | `task:progress` | Progress update: `{"type":"task:progress","payload":{"task_id":"...","summary":"..."}}` |
 
 ### Configuration
 

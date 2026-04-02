@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "claw-connect WebSocket Protocol",
+  "description": "Wire protocol for communication between a remote server and a claw-connect client. Compatible with multica protocol convention: all messages use {\"type\": \"namespace:action\", \"payload\": {...}} envelope format.",
+
+  "type": "object",
+  "required": ["type", "payload"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Event type in namespace:action format."
+    },
+    "payload": {
+      "type": "object",
+      "description": "Type-specific payload data."
+    }
+  },
+
+  "$defs": {
+    "task:dispatch": {
+      "title": "Task Dispatch (Server → Client)",
+      "description": "Server sends this to request the client to execute a task. The client will build the prompt from 'prompt' field, or fall back to 'title' + 'description'.",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "task:dispatch" },
+        "payload": {
+          "type": "object",
+          "required": ["task_id"],
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "Unique task identifier. Used to correlate all messages and results."
+            },
+            "prompt": {
+              "type": "string",
+              "description": "Direct prompt to execute. Takes priority over title/description."
+            },
+            "title": {
+              "type": "string",
+              "description": "Task title. Used as prompt if 'prompt' is empty."
+            },
+            "description": {
+              "type": "string",
+              "description": "Task description. Appended to title as prompt body."
+            },
+            "options": { "$ref": "#/$defs/execOptions" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "task:cancelled": {
+      "title": "Task Cancelled (Server → Client)",
+      "description": "Server sends this to cancel a running task.",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "task:cancelled" },
+        "payload": {
+          "type": "object",
+          "required": ["task_id"],
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "The task ID to cancel."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "task:message": {
+      "title": "Task Message (Client → Server)",
+      "description": "Client sends this for each agent event during execution (text output, tool use, tool result, etc.).",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "task:message" },
+        "payload": {
+          "type": "object",
+          "required": ["task_id", "seq", "type"],
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "The task ID this message belongs to."
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Sequence number within this task, starting from 1."
+            },
+            "type": {
+              "type": "string",
+              "enum": ["text", "thinking", "tool_use", "tool_result", "status", "error", "log"],
+              "description": "The kind of agent event."
+            },
+            "tool": {
+              "type": "string",
+              "description": "Tool name (for tool_use and tool_result)."
+            },
+            "content": {
+              "type": "string",
+              "description": "Text content (for text, error, log types)."
+            },
+            "input": {
+              "type": "object",
+              "description": "Tool input parameters (for tool_use)."
+            },
+            "output": {
+              "type": "string",
+              "description": "Tool output (for tool_result)."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "task:completed": {
+      "title": "Task Completed (Client → Server)",
+      "description": "Client sends this when task execution finishes successfully or is aborted.",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "task:completed" },
+        "payload": {
+          "type": "object",
+          "required": ["task_id", "status"],
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "The task ID."
+            },
+            "status": {
+              "type": "string",
+              "enum": ["completed", "aborted"],
+              "description": "Final task status."
+            },
+            "output": {
+              "type": "string",
+              "description": "Accumulated text output from the agent."
+            },
+            "duration_ms": {
+              "type": "integer",
+              "description": "Execution duration in milliseconds."
+            },
+            "session_id": {
+              "type": "string",
+              "description": "Session ID for resumption (Claude Code only)."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "task:failed": {
+      "title": "Task Failed (Client → Server)",
+      "description": "Client sends this when a task cannot be started or fails during execution.",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "task:failed" },
+        "payload": {
+          "type": "object",
+          "required": ["task_id", "error"],
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "description": "The task ID that failed."
+            },
+            "error": {
+              "type": "string",
+              "description": "Error description."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "task:progress": {
+      "title": "Task Progress (Client → Server)",
+      "description": "Client sends this to report high-level progress during execution.",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "task:progress" },
+        "payload": {
+          "type": "object",
+          "required": ["task_id", "summary"],
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string",
+              "description": "Human-readable progress summary."
+            },
+            "step": {
+              "type": "integer",
+              "description": "Current step number."
+            },
+            "total": {
+              "type": "integer",
+              "description": "Total number of steps."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "daemon:register": {
+      "title": "Daemon Register (Client → Server)",
+      "description": "Client sends this on connection to identify itself and declare available runtimes.",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "daemon:register" },
+        "payload": {
+          "type": "object",
+          "required": ["daemon_id"],
+          "properties": {
+            "daemon_id": {
+              "type": "string",
+              "description": "Unique daemon identifier."
+            },
+            "agent_id": {
+              "type": "string",
+              "description": "Agent identifier this daemon serves."
+            },
+            "runtimes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string", "description": "Runtime type (claude, codex)." },
+                  "version": { "type": "string" },
+                  "status": { "type": "string" }
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "daemon:heartbeat": {
+      "title": "Daemon Heartbeat (Client → Server)",
+      "description": "Client sends this periodically to report liveness and current load.",
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "const": "daemon:heartbeat" },
+        "payload": {
+          "type": "object",
+          "required": ["daemon_id"],
+          "properties": {
+            "daemon_id": { "type": "string" },
+            "agent_id": { "type": "string" },
+            "current_tasks": {
+              "type": "integer",
+              "description": "Number of currently running tasks."
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+
+    "execOptions": {
+      "title": "Execution Options",
+      "description": "Optional parameters for task execution.",
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "type": "string",
+          "description": "Working directory for the agent."
+        },
+        "model": {
+          "type": "string",
+          "description": "AI model to use."
+        },
+        "system_prompt": {
+          "type": "string",
+          "description": "Additional system instructions."
+        },
+        "max_turns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Maximum conversation turns. 0 means no limit."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Execution timeout in milliseconds. 0 means default (20 minutes)."
+        },
+        "resume_session_id": {
+          "type": "string",
+          "description": "Resume a previous session (Claude Code only)."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
