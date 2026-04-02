@@ -1,46 +1,34 @@
-node_modules
-dist
-*.log
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
-.envrc
 
-# build outputs
-.turbo
-.next
-out
-build
-bin
-dist-electron
-*.tsbuildinfo
+# Environment
+.env
+.env.*
 
-# env
-.env*
-!.env.example
-
-# test coverage
-coverage
-
-# Go
-server/bin/
-server/tmp/
-server/migrate
-server/daemon
-server/multica
-
-# Test artifacts
-test-results/
-apps/web/test-results/
-
-# context (agent workspace)
-.context
-
-# local settings
+# Local settings
 .claude/
-
-# feature tracking
-_features/
-
-# platform specific
-*.dmg
-*.app
-server/server
