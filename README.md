@@ -1,6 +1,8 @@
 # claw-connect
 
-A lightweight Go library for driving AI coding agents (Claude Code, Codex) via subprocess + stdio. Zero third-party dependencies.
+A lightweight Go library for driving AI coding agents (Claude Code, Codex) via subprocess + stdio. Includes a WebSocket remote client for receiving commands from a remote server.
+
+> **Dependencies:** Core agent backends have zero third-party dependencies. The remote client uses [gorilla/websocket](https://github.com/gorilla/websocket).
 
 > **Note:** This project was extracted from [github.com/multica-ai/multica](https://github.com/multica-ai/multica/) as a standalone library.
 
@@ -198,6 +200,81 @@ session2, _ := backend.Execute(ctx, "Add authentication to it", clawconnect.Exec
     Cwd:             opts.Cwd,
     ResumeSessionID: result1.SessionID,
 })
+```
+
+## Remote Client (WebSocket)
+
+The `RemoteClient` connects to a remote WebSocket server, listens for execution commands, runs them via a configured `Backend`, and streams results back.
+
+### Quick Start
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+
+    clawconnect "github.com/alswl/claw-connect"
+)
+
+func main() {
+    backend, err := clawconnect.New("claude", clawconnect.Config{
+        ExecutablePath: "claude",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    client, err := clawconnect.NewRemoteClient(clawconnect.RemoteConfig{
+        ServerURL:     "wss://example.com/ws",
+        Backend:       backend,
+        Headers:       map[string]string{"Authorization": "Bearer my-token"},
+        MaxConcurrent: 3,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Run blocks until context is cancelled. Reconnects automatically.
+    if err := client.Run(context.Background()); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### Wire Protocol
+
+The WebSocket protocol uses simple JSON envelopes:
+
+| Direction | Type | Description |
+|-----------|------|-------------|
+| Server → Client | `execute` | Execute a prompt: `{"type":"execute","id":"req-123","prompt":"...","options":{...}}` |
+| Server → Client | `cancel` | Cancel a running execution: `{"type":"cancel","id":"req-123"}` |
+| Client → Server | `message` | Streaming event: `{"type":"message","id":"req-123","message":{...}}` |
+| Client → Server | `result` | Final result: `{"type":"result","id":"req-123","result":{...}}` |
+| Client → Server | `error` | Execution error: `{"type":"error","id":"req-123","error":"..."}` |
+
+### Configuration
+
+```go
+type RemoteConfig struct {
+    ServerURL        string            // WebSocket endpoint (required)
+    Backend          Backend           // Agent backend to execute prompts (required)
+    Logger           *slog.Logger      // Structured logger (default: slog.Default())
+    Headers          map[string]string // Extra HTTP headers for handshake
+    MaxConcurrent    int               // Max parallel executions (0 = unlimited)
+    ReconnectBackoff *BackoffConfig    // Reconnection strategy
+    PingInterval     time.Duration     // Heartbeat interval (default: 30s)
+    PongTimeout      time.Duration     // Pong wait timeout (default: 10s)
+    WriteTimeout     time.Duration     // Write deadline (default: 10s)
+}
+
+type BackoffConfig struct {
+    InitialDelay time.Duration // default: 1s
+    MaxDelay     time.Duration // default: 60s
+    Factor       float64       // default: 2.0
+}
 ```
 
 ## License
